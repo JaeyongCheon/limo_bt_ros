@@ -45,10 +45,11 @@ def build_behavior_tree(agent, behavior_tree_xml: str, env_pkg: str):
 
 
 def _parse_xml_to_bt(xml_node, *, bt_module, mission_bt_module, agent, top_xml_path):
-    node_type = xml_node.tag
+    # Use 'ID' attribute if present (for BehaviorTree.CPP format), otherwise use tag name
+    node_type = xml_node.attrib.get("ID", xml_node.tag)
 
     # --- SubTree: inline from file (one <BehaviorTree> per file assumed) ---
-    if node_type == "SubTree":
+    if xml_node.tag == "SubTree":
         subtree_id = xml_node.attrib.get("ID")
         if not subtree_id:
             raise ValueError("[ERROR] SubTree node must have an 'ID' attribute")
@@ -74,25 +75,35 @@ def _parse_xml_to_bt(xml_node, *, bt_module, mission_bt_module, agent, top_xml_p
 
     BTNodeList = getattr(bt_module, "BTNodeList")
     attrib = {k: convert_value(v) for k, v in xml_node.attrib.items()}
+    
+    # Remove 'ID' from attributes if present (it's already used in node_type)
+    attrib.pop("ID", None)
 
-    if node_type in BTNodeList.CONTROL_NODES:
-        control_class = getattr(bt_module, node_type)
-        return control_class(node_type, children=children, **attrib)
+    # Check if it's a control or decorator node by tag name
+    if xml_node.tag in BTNodeList.CONTROL_NODES:
+        control_class = getattr(bt_module, xml_node.tag)
+        # Use 'name' attribute if provided, otherwise use tag as name
+        node_name = attrib.pop("name", xml_node.tag)
+        return control_class(node_name, children=children, **attrib)
 
-    elif node_type in BTNodeList.DECORATOR_NODES:
-        decorator_class = getattr(bt_module, node_type)
+    elif xml_node.tag in BTNodeList.DECORATOR_NODES:
+        decorator_class = getattr(bt_module, xml_node.tag)
         if len(children) != 1:
-            raise ValueError(f"[ERROR] Decorator '{node_type}' must have exactly 1 child.")
-        return decorator_class(node_type, child=children[0], **attrib)
+            raise ValueError(f"[ERROR] Decorator '{xml_node.tag}' must have exactly 1 child.")
+        # Use 'name' attribute if provided, otherwise use tag as name
+        node_name = attrib.pop("name", xml_node.tag)
+        return decorator_class(node_name, child=children[0], **attrib)
 
     elif node_type in (BTNodeList.ACTION_NODES + BTNodeList.CONDITION_NODES):
         action_class = getattr(bt_module, node_type)
-        return action_class(node_type, agent, **attrib)
+        # Use 'name' attribute if provided, otherwise use node_type as name
+        node_name = attrib.pop("name", node_type)
+        return action_class(node_name, agent, **attrib)
 
-    elif node_type == "BehaviorTree":  # Root
+    elif xml_node.tag == "BehaviorTree":  # Root (check by tag, not node_type)
         if not children:
             raise ValueError("[ERROR] <BehaviorTree> has no child node.")
         return children[0]
 
     else:
-        raise ValueError(f"[ERROR] Unknown behavior node type: {node_type}")
+        raise ValueError(f"[ERROR] Unknown behavior node type: {node_type} (tag: {xml_node.tag})")

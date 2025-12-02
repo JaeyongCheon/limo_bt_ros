@@ -55,8 +55,11 @@ class Sequence(Node):
 
     async def run(self, agent, blackboard):
         while self.current_child_index < len(self.children):
-            status = await self.children[self.current_child_index].run(agent, blackboard)
+            child = self.children[self.current_child_index]
+            print(f"[Sequence '{self.name}'] Running child {self.current_child_index}: {child.name}")
+            status = await child.run(agent, blackboard)
             self.status = status
+            print(f"[Sequence '{self.name}'] Child {child.name} returned: {status}")
 
             if status == Status.RUNNING:
                 return Status.RUNNING  

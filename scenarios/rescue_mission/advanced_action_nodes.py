@@ -14,8 +14,18 @@ from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 from vision_msgs.msg import Detection2DArray
 
-from .path_planner import DualPathPlanner, generate_spiral_waypoints
-from .escort_mode import EscortMode
+try:
+    from scenarios.rescue_mission.path_planner import DualPathPlanner, generate_spiral_waypoints
+    from scenarios.rescue_mission.escort_mode import EscortMode
+except ImportError:
+    # For direct execution or when imported from bt_nodes.py
+    import sys
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    from path_planner import DualPathPlanner, generate_spiral_waypoints
+    from escort_mode import EscortMode
 
 
 class GenerateSpiralWaypoints(Node):
@@ -413,7 +423,6 @@ class EscortToVictim(Node):
         safe_path = safe_path_info['path']
         
         # 지형 데이터 추출
-        from .path_planner import DualPathPlanner
         planner = DualPathPlanner()
         terrain_data = planner._extract_terrain_data(grid_map)
         

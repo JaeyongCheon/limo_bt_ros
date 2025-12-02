@@ -43,7 +43,8 @@ class BTRunner:
 
     async def step(self):
         # Main bt_runner loop logic
-        await self.agent.run_tree()
+        status = await self.agent.run_tree()
+        print(f"[BT] Tree status: {status}")
         self.clock.tick(self.bt_tick_rate)
 
 

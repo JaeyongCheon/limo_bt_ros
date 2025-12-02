@@ -8,6 +8,9 @@ CUSTOM_ACTION_NODES = [
     'MoveToPosition',
     'RotateInPlace',
     'WaitForDuration',
+    'UpdateOdometry',
+    'GetUserInput',
+    'NavigateToGoal',
     # Advanced Action Nodes
     'GenerateSpiralWaypoints',
     'GetNextWaypoint',
@@ -28,6 +31,7 @@ CUSTOM_CONDITION_NODES = [
     'IsTerrainTraversable',
     'IsPathSafe',
     'HasGridMapData',
+    'IsVictimDetected',
 ]
 
 # BT Node List
@@ -364,6 +368,78 @@ class IsPathSafe(ConditionWithROSTopics):
             return True  # 에러 시 안전하게 통과
 
 
+class IsVictimDetected(ConditionWithROSTopics):
+    """조난자 발견 여부 확인 (vision_msgs/Detection2DArray 기반)"""
+    def __init__(self, name, agent):
+        try:
+            from vision_msgs.msg import Detection2DArray
+            super().__init__(name, agent, [
+                (Detection2DArray, '/victim_detection', 'detections'),
+            ])
+        except ImportError:
+            # vision_msgs 없으면 std_msgs.Bool 사용
+            from std_msgs.msg import Bool
+            super().__init__(name, agent, [
+                (Bool, '/victim_detection', 'detection_bool'),
+            ])
+        ns = agent.ros_namespace or ""
+        # Odometry도 구독하여 조난자 위치 계산
+        self.odom_sub = self.ros.node.create_subscription(
+            Odometry, f"{ns}/odom" if ns else "/odom",
+            lambda msg: setattr(self, '_odom', msg),
+            10
+        )
+        self._odom = None
+    
+    def _predicate(self, agent, blackboard):
+        # vision_msgs 사용
+        if 'detections' in self._cache:
+            detections = self._cache['detections']
+            if len(detections.detections) > 0:
+                # 조난자 발견!
+                # 현재 위치에서 일정 거리 앞을 조난자 위치로 설정
+                if self._odom is not None:
+                    robot_x = self._odom.pose.pose.position.x
+                    robot_y = self._odom.pose.pose.position.y
+                    
+                    # 로봇 방향 계산
+                    q = self._odom.pose.pose.orientation
+                    yaw = math.atan2(
+                        2.0 * (q.w * q.z + q.x * q.y),
+                        1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+                    )
+                    
+                    # 조난자는 로봇 전방 3m로 가정
+                    victim_distance = 3.0
+                    victim_x = robot_x + victim_distance * math.cos(yaw)
+                    victim_y = robot_y + victim_distance * math.sin(yaw)
+                    
+                    blackboard['victim_location'] = (victim_x, victim_y)
+                    blackboard['victim_detected'] = True
+                    
+                    self.ros.node.get_logger().info(
+                        f"🆘 조난자 발견! 위치: ({victim_x:.2f}, {victim_y:.2f})"
+                    )
+                    return True
+        
+        # std_msgs.Bool 사용
+        if 'detection_bool' in self._cache:
+            detection = self._cache['detection_bool']
+            if detection.data:
+                # 조난자 발견 (위치는 별도 설정)
+                if 'victim_location' not in blackboard:
+                    # 기본 위치 설정 (현재 위치에서 3m 앞)
+                    if self._odom is not None:
+                        robot_x = self._odom.pose.pose.position.x
+                        robot_y = self._odom.pose.pose.position.y
+                        blackboard['victim_location'] = (robot_x + 3.0, robot_y)
+                
+                blackboard['victim_detected'] = True
+                return True
+        
+        return False
+
+
 class MoveToPosition(ActionWithROSAction):
     """특정 (x, y) 좌표로 이동"""
     def __init__(self, name, agent, position=None):
@@ -491,17 +567,261 @@ class WaitForDuration(Node):
         return self.status
 
 
+class UpdateOdometry(Node):
+    """Odometry를 blackboard에 업데이트 (항상 SUCCESS)"""
+    def __init__(self, name, agent):
+        super().__init__(name)
+        self.ros = agent.ros_bridge
+        ns = agent.ros_namespace or ""
+        
+        # Odometry 구독
+        odom_topic = f"{ns}/odom" if ns else "/odom"
+        self.odom_sub = self.ros.node.create_subscription(
+            Odometry, odom_topic,
+            lambda msg: setattr(self, '_odom', msg),
+            10
+        )
+        self._odom = None
+        self.type = "Action"
+    
+    async def run(self, agent, blackboard):
+        if self._odom is not None:
+            # blackboard에 odometry 저장
+            blackboard['odom'] = self._odom
+            
+            # 현재 위치도 저장
+            blackboard['current_position'] = (
+                self._odom.pose.pose.position.x,
+                self._odom.pose.pose.position.y
+            )
+            
+            # start_position이 없으면 설정 (최초 1회)
+            if 'start_position' not in blackboard:
+                blackboard['start_position'] = blackboard['current_position']
+            
+            self.status = Status.SUCCESS
+        else:
+            # 시뮬레이션 모드: Odometry가 없으면 기본값 사용
+            if 'current_position' not in blackboard:
+                blackboard['current_position'] = (0.0, 0.0)
+                blackboard['start_position'] = (0.0, 0.0)
+                blackboard['current_yaw'] = 0.0
+                print("[UpdateOdometry] No odom, using default (0,0)")
+            self.status = Status.SUCCESS
+        
+        return self.status
+
+
+class GetUserInput(Node):
+    """사용자로부터 목표 좌표 입력받기 (맵 불필요)
+    
+    터미널에서 'x y' 형식으로 입력 (예: 3.0 2.5)
+    
+    Parameters:
+    - timeout: 입력 대기 시간 (초, 기본값: 30.0)
+    - relative: True이면 상대좌표로 해석 (기본값: False)
+    """
+    def __init__(self, name, agent, timeout=30.0, relative=False):
+        super().__init__(name)
+        self.timeout = float(timeout)
+        self.relative = relative
+        self.type = "Action"
+        self.input_received = False
+        self.goal = None
+    
+    async def run(self, agent, blackboard):
+        if not self.input_received:
+            print("\n" + "="*50)
+            if self.relative:
+                current = blackboard.get('current_position', (0.0, 0.0))
+                print(f"[GetUserInput] Current position: ({current[0]:.2f}, {current[1]:.2f})")
+                print(f"[GetUserInput] Enter RELATIVE goal (dx dy): ", end='', flush=True)
+            else:
+                print(f"[GetUserInput] Enter ABSOLUTE goal (x y): ", end='', flush=True)
+            
+            try:
+                user_input = input()
+                parts = user_input.strip().split()
+                
+                if len(parts) >= 2:
+                    x = float(parts[0])
+                    y = float(parts[1])
+                    
+                    if self.relative:
+                        current_pos = blackboard.get('current_position', (0.0, 0.0))
+                        goal_x = current_pos[0] + x
+                        goal_y = current_pos[1] + y
+                        print(f"[GetUserInput] Relative ({x}, {y}) -> Goal: ({goal_x:.2f}, {goal_y:.2f})")
+                    else:
+                        goal_x = x
+                        goal_y = y
+                        print(f"[GetUserInput] Absolute Goal: ({goal_x:.2f}, {goal_y:.2f})")
+                    
+                    blackboard['goal_position'] = (goal_x, goal_y)
+                    self.input_received = True
+                    self.status = Status.SUCCESS
+                else:
+                    print("[GetUserInput] Invalid input format. Use: x y")
+                    self.status = Status.FAILURE
+            except ValueError as e:
+                print(f"[GetUserInput] Invalid number format: {e}")
+                self.status = Status.FAILURE
+            except Exception as e:
+                print(f"[GetUserInput] Error: {e}")
+                self.status = Status.FAILURE
+        else:
+            self.status = Status.SUCCESS
+        
+        print("="*50 + "\n")
+        return self.status
+    
+    def halt(self):
+        self.input_received = False
+
+
+class NavigateToGoal(Node):
+    """맵 없이 오도메트리만으로 목표 좌표까지 이동
+    
+    순수 오도메트리 기반으로 목표까지 이동 (Nav2 불필요)
+    cmd_vel로 직접 제어
+    
+    Parameters:
+    - speed: 이동 속도 (m/s, 기본값: 0.3)
+    - angular_speed: 회전 속도 (rad/s, 기본값: 0.5)
+    - goal_threshold: 목표 도달 판정 거리 (m, 기본값: 0.2)
+    - angle_threshold: 방향 정렬 판정 각도 (degree, 기본값: 10)
+    """
+    def __init__(self, name, agent, speed=0.3, angular_speed=0.5, 
+                 goal_threshold=0.2, angle_threshold=10.0):
+        super().__init__(name)
+        self.ros = agent.ros_bridge
+        self.speed = float(speed)
+        self.angular_speed = float(angular_speed)
+        self.goal_threshold = float(goal_threshold)
+        self.angle_threshold = float(angle_threshold) * math.pi / 180.0
+        self.type = "Action"
+        
+        ns = agent.ros_namespace or ""
+        cmd_topic = f"/{ns}/cmd_vel" if ns else "/cmd_vel"
+        self.cmd_pub = self.ros.node.create_publisher(Twist, cmd_topic, 10)
+        print(f"[NavigateToGoal] Publishing to: {cmd_topic}")
+        
+        # Odometry 구독 (방향 정보 필요)
+        odom_topic = f"/{ns}/odom" if ns else "/odom"
+        self.odom_sub = self.ros.node.create_subscription(
+            Odometry, odom_topic,
+            self._odom_callback,
+            10
+        )
+        print(f"[NavigateToGoal] Subscribed to: {odom_topic}")
+        self.current_yaw = 0.0
+    
+    def _odom_callback(self, msg):
+        """Odometry에서 현재 방향(yaw) 추출"""
+        q = msg.pose.pose.orientation
+        # Quaternion to Euler (yaw)
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
+    
+    async def run(self, agent, blackboard):
+        # 목표 위치 확인
+        goal = blackboard.get('goal_position')
+        if goal is None:
+            print("[NavigateToGoal] No goal position in blackboard")
+            self.status = Status.FAILURE
+            return self.status
+        
+        # 현재 위치 확인
+        current_pos = blackboard.get('current_position')
+        if current_pos is None:
+            print("[NavigateToGoal] No current position available")
+            self.status = Status.FAILURE
+            return self.status
+        
+        goal_x, goal_y = goal[0], goal[1]
+        curr_x, curr_y = current_pos[0], current_pos[1]
+        
+        # 목표까지 거리 계산
+        dx = goal_x - curr_x
+        dy = goal_y - curr_y
+        distance = math.hypot(dx, dy)
+        
+        print(f"[NavigateToGoal] Current: ({curr_x:.2f}, {curr_y:.2f}), Goal: ({goal_x:.2f}, {goal_y:.2f}), Distance: {distance:.2f}m")
+        
+        # 목표 도달 확인
+        if distance < self.goal_threshold:
+            twist = Twist()
+            self.cmd_pub.publish(twist)
+            print(f"[NavigateToGoal] Goal reached! Distance: {distance:.2f}m")
+            self.status = Status.SUCCESS
+            return self.status
+        
+        # 목표 방향 계산
+        target_yaw = math.atan2(dy, dx)
+        yaw_error = target_yaw - self.current_yaw
+        
+        # 각도를 -pi ~ pi 범위로 정규화
+        while yaw_error > math.pi:
+            yaw_error -= 2 * math.pi
+        while yaw_error < -math.pi:
+            yaw_error += 2 * math.pi
+        
+        twist = Twist()
+        
+        # 방향이 크게 틀어져 있으면 제자리 회전
+        if abs(yaw_error) > self.angle_threshold:
+            twist.angular.z = self.angular_speed if yaw_error > 0 else -self.angular_speed
+            print(f"[NavigateToGoal] Turning... yaw_error: {yaw_error*180/math.pi:.1f}°, angular.z: {twist.angular.z:.2f}")
+        else:
+            # 방향이 맞으면 전진
+            twist.linear.x = min(self.speed, distance)  # 가까우면 속도 감소
+            # 미세 조정
+            twist.angular.z = 0.3 * yaw_error
+            print(f"[NavigateToGoal] Moving... distance: {distance:.2f}m, linear.x: {twist.linear.x:.2f}, angular.z: {twist.angular.z:.2f}")
+        
+        print(f"[NavigateToGoal] Publishing Twist - linear.x: {twist.linear.x}, angular.z: {twist.angular.z}")
+        self.cmd_pub.publish(twist)
+        self.status = Status.RUNNING
+        return self.status
+    
+    def halt(self):
+        """정지"""
+        twist = Twist()
+        self.cmd_pub.publish(twist)
+        print("[NavigateToGoal] Stopped")
+
+
 # Import advanced action nodes
-from .advanced_action_nodes import (
-    GenerateSpiralWaypoints,
-    GetNextWaypoint,
-    GenerateRescuePaths,
-    VisualizeResults,
-    PublishMissionSuccess,
-    ReturnToBase,
-    WaitForRescueTeam,
-    EscortToVictim,
-    CheckTeamFollowing,
-    WarnDangerZone,
-    AnnounceArrival,
-)
+try:
+    from scenarios.rescue_mission.advanced_action_nodes import (
+        GenerateSpiralWaypoints,
+        GetNextWaypoint,
+        GenerateRescuePaths,
+        VisualizeResults,
+        PublishMissionSuccess,
+        ReturnToBase,
+        WaitForRescueTeam,
+        EscortToVictim,
+        CheckTeamFollowing,
+        WarnDangerZone,
+        AnnounceArrival,
+    )
+except ImportError:
+    # For direct execution
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from advanced_action_nodes import (
+        GenerateSpiralWaypoints,
+        GetNextWaypoint,
+        GenerateRescuePaths,
+        VisualizeResults,
+        PublishMissionSuccess,
+        ReturnToBase,
+        WaitForRescueTeam,
+        EscortToVictim,
+        CheckTeamFollowing,
+        WarnDangerZone,
+        AnnounceArrival,
+    )
