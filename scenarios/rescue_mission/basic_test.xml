@@ -1,0 +1,22 @@
+<root>
+  <BehaviorTree ID="FullNodeTest">
+    <Sequence name="RootSequence">
+      <LogMessage name="StartLog" message="🚀 Full BT node test started!" level="INFO"/>
+      <Wait name="Wait1" duration="1.5"/>
+
+      <WaitForMissionCommand name="WaitMission" timeout="5.0"/>
+      <ParseTargetCommand name="ParseTarget"/>
+
+      <NavigateToTarget name="NavToTarget"/>
+      <NavigateToWaypoint name="NavToWP"/>
+      <RotateToAngle name="Rotate90" angle_deg="90" angular_speed="0.5"/>
+
+      <ConfirmVictimLocation name="ConfirmVictim"/>
+      <StartClueMonitoring name="StartClues"/>
+      <GetNextClue name="NextClue1"/>
+      <GetNextClue name="NextClue2"/>
+
+      <LogMessage name="EndLog" message="✅ Full BT node test finished!" level="INFO"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

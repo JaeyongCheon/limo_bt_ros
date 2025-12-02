@@ -1,0 +1,525 @@
+<!-- 
+  조난자 구조 로봇 미션 - Behavior Tree
+  
+  사용 프레임워크: BehaviorTree.CPP
+  ROS2 통합: 각 Action은 ROS2 노드와 통신
+
+ -->
+<root main_tree_to_execute="RescueMissionMain">
+<!--  =========================================  -->
+<!--  메인 트리: 전체 구조 미션 흐름               -->
+<!--  =========================================  -->
+<!-- 
+    전체 흐름 (PROJECT_RESCUE_ROBOT.md 10단계 반영):
+    
+    [시스템 초기화]
+    - 센서, Nav2, YOLO, Terrain Analysis 확인
+    
+    [메인 미션 실행]
+    2-1. 미션 명령 대기 ("북쪽 5m")
+    2-2. 목표 좌표 파싱
+    2-3. 증거 모니터링 시작 (배경)
+    2-4. 목표 지점으로 이동
+    2-5. 다중 탐색 전략
+         - 계층적 탐색 (2m → 5m → 10m → 15m)
+         - 물건 기반 탐색 (Fallback)
+    2-6. 조난자 위치 재확인
+    2-7. 구조 경로 생성 (안전/균형/최단)
+    2-8. RViz 시각화
+    2-9. 미션 성공 알림
+    2-10. 초기 위치로 귀환
+    2-11. 구조대와 함께 이동 (동반 안내)
+    2-12. 조난자 위치 도착 알림
+    
+    [미션 완료 처리]
+    - 보고서 발행, 지도 저장
+   -->
+<BehaviorTree ID="RescueMissionMain">
+<Sequence name="RescueMissionSequence">
+<!--  1단계: 시스템 초기화  -->
+<SubTree ID="InitializeSystem" name="SystemInit"/>
+<!--  2단계: 메인 미션 실행 (탐색 + 귀환 + 동반 안내)  -->
+<SubTree ID="ExecuteRescueMission" name="MainMission"/>
+<!--  3단계: 미션 완료 처리  -->
+<SubTree ID="FinalizeAndReport" name="Finalize"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 1: 시스템 초기화                   -->
+<!--  =========================================  -->
+<BehaviorTree ID="InitializeSystem">
+<Sequence name="InitSequence">
+<!--  센서 상태 확인  -->
+<Action ID="CheckSensorStatus" name="CheckSensors" sensors="lidar,camera,depth_camera,imu">
+<!--  모든 센서가 정상 발행 중인지 확인  -->
+</Action>
+<!--  Terrain Analysis 시작 확인  -->
+<Condition ID="IsTerrainAnalysisReady" name="TerrainReady" topic="/grid_map" timeout="5.0">
+<!--  /grid_map 토픽이 발행되는지 확인  -->
+</Condition>
+<!--  YOLO Detector 시작 확인  -->
+<Condition ID="IsYOLOReady" name="YOLOReady" topic="/yolo/detections" timeout="5.0">
+<!--  /yolo/detections 토픽이 발행되는지 확인  -->
+</Condition>
+<!--  Nav2 준비 확인  -->
+<Condition ID="IsNav2Ready" name="Nav2Ready" action_server="/navigate_to_pose" timeout="10.0">
+<!--  Nav2 액션 서버가 준비되었는지 확인  -->
+</Condition>
+<!--  초기화 완료 로그  -->
+<Action ID="LogMessage" name="LogInitComplete" message="✅ 시스템 초기화 완료. 미션 준비됨." level="INFO"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 2: 메인 구조 미션                  -->
+<!--  =========================================  -->
+<BehaviorTree ID="ExecuteRescueMission">
+<Sequence name="MainMissionSequence">
+<!--  2-1. 미션 명령 대기  -->
+<Action ID="WaitForMissionCommand" name="WaitCommand" topic="/mission_command" timeout="300.0">
+<!--  "북쪽 5m" 같은 명령 대기  -->
+<!--  출력: {command}  -->
+</Action>
+<!--  2-2. 목표 좌표 파싱  -->
+<Action ID="ParseTargetCommand" name="ParseTarget" command="{command}" parser_service="/parse_indoor_target">
+<!--  입력: "북쪽 5m"  -->
+<!--  출력: {target_pose} = (0, 5)  -->
+</Action>
+<!--  2-3. 증거 모니터링 시작  -->
+<Action ID="StartClueMonitoring" name="StartClueMonitor" yolo_topic="/yolo/detections" clue_classes="backpack,shoe,cell phone,bottle,umbrella">
+<!--  배경에서 조난자 물건 감지 시작  -->
+<!--  발견 시 블랙보드에 위치 저장: {clue_locations}  -->
+</Action>
+<!--  2-4. 목표 지점으로 이동  -->
+<Action ID="NavigateToTarget" name="NavigateToTargetPoint" goal_pose="{target_pose}" action="/navigate_to_pose" timeout="120.0">
+<!--  Nav2로 목표까지 자율주행  -->
+<!--  장애물 회피하며 안전하게 이동  -->
+<!--  이동 중에도 ClueMonitor가 물건 감지 계속  -->
+</Action>
+<!--  2-5. 다중 탐색 전략 (목표 지점 → 물건 위치)  -->
+<Fallback name="TryMultipleSearchStrategies">
+<!--  전략 1: 목표 지점 계층적 탐색 (우선)  -->
+<SubTree ID="HierarchicalSearch" name="SearchAtTarget" target_center="{target_pose}"/>
+<!--  전략 2: 발견된 물건 위치 기반 탐색 (대안)  -->
+<SubTree ID="SearchAroundClues" name="SearchNearClues"/>
+</Fallback>
+<!--  2-6. 조난자 위치 재확인  -->
+<Action ID="ConfirmVictimLocation" name="ConfirmVictim" victim_topic="/victim_detection">
+<!--  YOLO로 한 번 더 확인  -->
+<!--  출력: {victim_pose}  -->
+</Action>
+<!--  2-7. 구조 경로 생성  -->
+<Action ID="GenerateRescuePaths" name="GeneratePaths" start_pose="{robot_start}" victim_pose="{victim_pose}" terrain_map="{grid_map}" service="/generate_rescue_paths">
+<!--  안전/균형/최단 3가지 경로 생성  -->
+<!--  출력: {safe_path}, {balanced_path}, {shortest_path}, {danger_zones}  -->
+</Action>
+<!--  2-8. 결과 시각화  -->
+<Action ID="VisualizeResults" name="ShowResults" victim_pose="{victim_pose}" safe_path="{safe_path}" balanced_path="{balanced_path}" shortest_path="{shortest_path}" topic="/visualization_marker_array">
+<!--  RViz에 모든 정보 표시  -->
+</Action>
+<!--  2-9. 미션 성공 알림  -->
+<Action ID="PublishMissionSuccess" name="AnnounceSuccess" topic="/mission_status" message="🎯 조난자 발견 완료!" sound="/sounds/success.wav"/>
+<!--  2-10. 초기 위치로 귀환  -->
+<SubTree ID="ReturnToBase" name="ReturnHome" start_pose="{robot_start}"/>
+<!--  2-11. 구조대와 함께 이동  -->
+<SubTree ID="EscortRescueTeam" name="EscortTeam" safe_path="{safe_path}" danger_zones="{danger_zones}" victim_pose="{victim_pose}"/>
+<!--  2-12. 조난자 위치 도착 알림  -->
+<Action ID="AnnounceArrival" name="ArrivalAnnounce" topic="/mission_status" message="🎯 조난자 위치 도착! 구조 완료!" sound="/sounds/mission_complete.wav"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 3: 계층적 탐색 (핵심 알고리즘)      -->
+<!--  =========================================  -->
+<BehaviorTree ID="HierarchicalSearch">
+<Fallback name="SearchWithExpansion">
+<!--  하나라도 성공하면 전체 성공  -->
+<!--  모두 실패하면 전체 실패  -->
+<!--  레벨 1: 반경 2m 탐색  -->
+<SubTree ID="SearchLevel" name="SearchRadius2m" radius="2.0" density="0.3" target_center="{target_center}"/>
+<!--  레벨 2: 반경 5m 탐색  -->
+<SubTree ID="SearchLevel" name="SearchRadius5m" radius="5.0" density="0.3" target_center="{target_center}"/>
+<!--  레벨 3: 반경 10m 탐색  -->
+<SubTree ID="SearchLevel" name="SearchRadius10m" radius="10.0" density="0.3" target_center="{target_center}"/>
+<!--  레벨 4: 반경 15m 탐색 (최대)  -->
+<SubTree ID="SearchLevel" name="SearchRadius15m" radius="15.0" density="0.3" target_center="{target_center}"/>
+<!--  모든 레벨 실패 시  -->
+<Action ID="LogMessage" name="LogSearchFailed" message="❌ 모든 반경 탐색 완료 - 조난자 미발견" level="WARN"/>
+</Fallback>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 4: 단일 레벨 탐색                  -->
+<!--  =========================================  -->
+<BehaviorTree ID="SearchLevel">
+<Sequence name="SingleLevelSearch">
+<!--  로그: 탐색 시작  -->
+<Action ID="LogMessage" name="LogSearchStart" message="🔍 반경 {radius}m 탐색 시작..." level="INFO"/>
+<!--  나선형 경로점 생성  -->
+<Action ID="GenerateSpiralWaypoints" name="GenerateWaypoints" center="{target_center}" max_radius="{radius}" density="{density}">
+<!--  출력: {waypoints} = [(x1,y1), (x2,y2), ...]  -->
+</Action>
+<!--  각 경로점 순회  -->
+<RepeatUntilSuccessful name="SearchWaypoints" num_cycles="-1">
+<!--  조난자 발견할 때까지 반복  -->
+<Sequence name="ProcessWaypoint">
+<!--  다음 경로점 가져오기  -->
+<Action ID="GetNextWaypoint" name="NextWP" waypoints="{waypoints}">
+<!--  출력: {current_waypoint}  -->
+<!--  모든 경로점 완료 시 FAILURE 반환  -->
+</Action>
+<!--  경로점으로 이동  -->
+<Action ID="NavigateToWaypoint" name="MoveToWP" waypoint="{current_waypoint}" action="/navigate_to_pose" timeout="30.0"/>
+<!--  360도 회전하며 스캔  -->
+<SubTree ID="RotateAndScan" name="ScanArea"/>
+<!--  YOLO 감지 확인  -->
+<Condition ID="IsVictimDetected" name="CheckVictim" topic="/victim_detection" timeout="0.5">
+<!--  조난자 감지되면 SUCCESS → 전체 탐색 종료  -->
+<!--  감지 안 되면 FAILURE → 다음 경로점  -->
+</Condition>
+</Sequence>
+</RepeatUntilSuccessful>
+<!--  이 레벨에서 못 찾음  -->
+<Action ID="LogMessage" name="LogLevelFailed" message="⚠️ 반경 {radius}m 탐색 완료 - 미발견" level="WARN"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 5: 회전 스캔                       -->
+<!--  =========================================  -->
+<BehaviorTree ID="RotateAndScan">
+<Sequence name="RotateScanSequence">
+<!--  0도 (정면)  -->
+<Action ID="RotateToAngle" name="Rotate0" angle="0.0" angular_velocity="0.5"/>
+<Action ID="Wait" name="Wait1" duration="0.5"/>
+<!--  90도 (왼쪽)  -->
+<Action ID="RotateToAngle" name="Rotate90" angle="90.0" angular_velocity="0.5"/>
+<Action ID="Wait" name="Wait2" duration="0.5"/>
+<!--  180도 (뒤)  -->
+<Action ID="RotateToAngle" name="Rotate180" angle="180.0" angular_velocity="0.5"/>
+<Action ID="Wait" name="Wait3" duration="0.5"/>
+<!--  270도 (오른쪽)  -->
+<Action ID="RotateToAngle" name="Rotate270" angle="270.0" angular_velocity="0.5"/>
+<Action ID="Wait" name="Wait4" duration="0.5"/>
+<!--  0도로 복귀  -->
+<Action ID="RotateToAngle" name="RotateBack" angle="0.0" angular_velocity="0.5"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 6: 증거 기반 탐색 (물건 발견 위치)  -->
+<!--  =========================================  -->
+<BehaviorTree ID="SearchAroundClues">
+<Sequence name="ClueBasedSearch">
+<!--  1. 저장된 물건 위치가 있는지 확인  -->
+<Condition ID="HasCluesStored" name="CheckClues" blackboard_key="clue_locations">
+<!--  {clue_locations} 리스트가 비어있지 않으면 SUCCESS  -->
+<!--  비어있으면 FAILURE → 탐색 포기  -->
+</Condition>
+<!--  2. 각 물건 위치 방문  -->
+<RepeatUntilSuccessful name="VisitAllClues" num_cycles="10">
+<Sequence name="InvestigateOneClue">
+<!--  2-1. 다음 물건 위치 가져오기  -->
+<Action ID="GetNextClue" name="GetClue" blackboard_key="clue_locations">
+<!--  {clue_locations} 리스트에서 다음 위치 추출  -->
+<!--  출력: {current_clue} = {x, y, object_type, confidence}  -->
+<!--  해당 항목은 리스트에서 제거  -->
+</Action>
+<!--  2-2. 물건 위치로 이동  -->
+<Action ID="NavigateToTarget" name="NavigateToClue" goal_pose="{current_clue.position}" action="/navigate_to_pose" timeout="60.0">
+<!--  물건 발견 위치로 이동  -->
+</Action>
+<!--  2-3. 물건 주변 정밀 탐색 (반경 3m)  -->
+<SubTree ID="SearchLevel" name="SearchAroundClue" target_center="{current_clue.position}" radius="3.0">
+<!--  물건이 있었다 → 조난자가 근처에 있을 가능성 높음  -->
+<!--  반경 3m 집중 탐색  -->
+</SubTree>
+<!--  2-4. 조난자 발견 확인  -->
+<Condition ID="IsVictimDetected" name="CheckVictimFound" topic="/victim_detection" timeout="0.5">
+<!--  SUCCESS이면 RepeatUntilSuccessful 종료  -->
+<!--  FAILURE이면 다음 물건 위치로  -->
+</Condition>
+</Sequence>
+</RepeatUntilSuccessful>
+<!--  3. 물건 위치 중 하나에서 발견!  -->
+<Action ID="LogClueSuccess" name="LogSuccess" message="조난자를 물건 근처에서 발견했습니다!">
+<!--  로그 기록  -->
+</Action>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 7: 초기 위치로 귀환                -->
+<!--  =========================================  -->
+<BehaviorTree ID="ReturnToBase">
+<Sequence name="ReturnSequence">
+<!--  귀환 시작 알림  -->
+<Action ID="LogMessage" name="LogReturnStart" message="🏠 초기 위치로 귀환 시작..." level="INFO"/>
+<!--  사람용 안전 경로 최종 확정  -->
+<Action ID="FinalizeHumanSafePath" name="FinalizePath" terrain_map_topic="/grid_map" robot_path="{traveled_path}">
+<!--  로봇이 지나온 경로를 사람 기준으로 필터링  -->
+<!--  출력: {human_safe_path}  -->
+</Action>
+<!--  초기 위치로 이동  -->
+<Action ID="NavigateToTarget" name="NavigateToStart" goal_pose="{start_pose}" action="/navigate_to_pose" timeout="120.0"/>
+<!--  귀환 완료 알림  -->
+<Action ID="LogMessage" name="LogReturnComplete" message="✅ 귀환 완료! 구조대 대기 중..." level="INFO"/>
+<!--  구조대 준비 대기  -->
+<Action ID="WaitForRescueTeam" name="WaitTeam" topic="/rescue_team_ready" timeout="60.0">
+<!--  구조대가 준비되면 출발 신호 수신  -->
+</Action>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 8: 구조대 동반 안내                -->
+<!--  =========================================  -->
+<BehaviorTree ID="EscortRescueTeam">
+<Sequence name="EscortSequence">
+<!--  동반 이동 시작 알림  -->
+<Action ID="LogMessage" name="LogEscortStart" message="🚶‍♂️🤖 구조대와 함께 출발합니다!" level="INFO"/>
+<!--  TTS 음성 안내  -->
+<Action ID="SpeakMessage" name="SpeakStart" message="구조대와 함께 출발합니다. 로봇을 따라오세요." topic="/tts_speak"/>
+<!--  동반 이동 모드 활성화  -->
+<Action ID="StartEscortMode" name="EnableEscort" walking_speed="1.0" lead_distance="2.0" max_separation="5.0">
+<!--  사람 속도에 맞춘 이동 모드  -->
+</Action>
+<!--  안전 경로 경로점 순회  -->
+<RepeatUntilSuccessful name="FollowSafePath" num_cycles="-1">
+<Sequence name="ProcessEscortWaypoint">
+<!--  다음 경로점 가져오기  -->
+<Action ID="GetNextWaypoint" name="NextEscortWP" waypoints="{safe_path}">
+<!--  출력: {current_waypoint}  -->
+<!--  모든 경로점 완료 시 FAILURE → 종료  -->
+</Action>
+<!--  다가오는 위험 구간 확인 및 경고  -->
+<Action ID="CheckAndWarnDangerZone" name="WarnDanger" current_pos="{current_waypoint}" danger_zones="{danger_zones}" warning_distance="5.0" tts_topic="/tts_speak">
+<!--  5m 이내 위험 구간 있으면 음성 경고  -->
+<!--  "주의: 3m 앞 경사 22도 구간입니다"  -->
+</Action>
+<!--  구조대가 따라오는지 확인  -->
+<Fallback name="EnsureTeamFollowing">
+<!--  구조대가 잘 따라오면 계속  -->
+<Condition ID="IsTeamFollowing" name="CheckTeam" team_topic="/rescue_team_position" max_distance="5.0"/>
+<!--  뒤처지면 대기  -->
+<Sequence name="WaitForTeamCatchUp">
+<Action ID="StopRobot" name="Stop" topic="/cmd_vel"/>
+<Action ID="SpeakMessage" name="SpeakWait" message="잠시 대기합니다. 따라와 주세요." topic="/tts_speak"/>
+<Action ID="WaitForTeamCatchUp" name="WaitCatchUp" team_topic="/rescue_team_position" max_distance="3.0" timeout="30.0"/>
+<Action ID="SpeakMessage" name="SpeakResume" message="출발합니다." topic="/tts_speak"/>
+</Sequence>
+</Fallback>
+<!--  경로점으로 천천히 이동  -->
+<Action ID="NavigateSlowly" name="MoveSlowly" waypoint="{current_waypoint}" max_speed="1.0" action="/navigate_to_pose" timeout="60.0"/>
+<!--  진행률 알림 (25% 단위)  -->
+<Action ID="AnnounceProgress" name="Progress" waypoints="{safe_path}" current_index="{waypoint_index}" tts_topic="/tts_speak"/>
+<!--  조난자 위치 도착 확인  -->
+<Condition ID="IsAtVictimLocation" name="CheckArrival" current_pos="{current_waypoint}" victim_pos="{victim_pose}" threshold="1.0">
+<!--  조난자 1m 이내면 SUCCESS → 종료  -->
+</Condition>
+</Sequence>
+</RepeatUntilSuccessful>
+<!--  도착 음성 안내  -->
+<Action ID="SpeakMessage" name="SpeakArrival" message="조난자 위치에 도착했습니다!" topic="/tts_speak"/>
+<!--  동반 이동 모드 비활성화  -->
+<Action ID="StopEscortMode" name="DisableEscort"/>
+<!--  완료 로그  -->
+<Action ID="LogMessage" name="LogEscortComplete" message="🎯 구조대 안내 완료! 조난자 위치 도착!" level="INFO"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  서브트리 9: 미션 완료 및 보고                -->
+<!--  =========================================  -->
+<BehaviorTree ID="FinalizeAndReport">
+<Sequence name="FinalizeSequence">
+<!--  미션 보고서 발행  -->
+<Action ID="PublishMissionReport" name="PublishReport" topic="/mission_report">
+<!--  전체 미션 결과 요약  -->
+</Action>
+<!--  지도 데이터 저장  -->
+<Action ID="SaveMapData" name="SaveMap" directory="/home/jycheon/team_ws/mission_logs" format="pgm">
+<!--  SLAM 지도, Grid Map 저장  -->
+</Action>
+<!--  미션 요약 출력  -->
+<Action ID="LogMessage" name="LogMissionSummary" message="📊 미션 요약: 조난자 발견 → 귀환 → 구조대 안내 완료" level="INFO"/>
+<!--  최종 완료 로그  -->
+<Action ID="LogMessage" name="LogMissionComplete" message="✅ 미션 완료! 시스템 대기 모드 전환." level="INFO"/>
+</Sequence>
+</BehaviorTree>
+<!--  =========================================  -->
+<!--  트리노드 라이브러리 (플러그인 정의)          -->
+<!--  =========================================  -->
+<TreeNodesModel>
+<!--  ===== Condition Nodes =====  -->
+<Condition ID="CheckSensorStatus">
+<input_port name="sensors" default="">센서 목록 (쉼표 구분)</input_port>
+</Condition>
+<Condition ID="IsTerrainAnalysisReady">
+<input_port name="topic" default="/grid_map">확인할 토픽</input_port>
+<input_port name="timeout" default="5.0">타임아웃 (초)</input_port>
+</Condition>
+<Condition ID="IsYOLOReady">
+<input_port name="topic" default="/yolo/detections">확인할 토픽</input_port>
+<input_port name="timeout" default="5.0">타임아웃 (초)</input_port>
+</Condition>
+<Condition ID="IsNav2Ready">
+<input_port name="action_server" default="/navigate_to_pose">액션 서버 이름</input_port>
+<input_port name="timeout" default="10.0">타임아웃 (초)</input_port>
+</Condition>
+<Condition ID="IsVictimDetected">
+<input_port name="topic" default="/victim_detection">조난자 감지 토픽</input_port>
+<input_port name="timeout" default="0.5">대기 시간</input_port>
+</Condition>
+<Condition ID="IsReturnModeEnabled">
+<input_port name="param" default="/return_to_base">파라미터 이름</input_port>
+</Condition>
+<Condition ID="HasCluesStored">
+<input_port name="blackboard_key" default="clue_locations">블랙보드 키</input_port>
+<output_port name="clue_count">저장된 물건 개수</output_port>
+</Condition>
+<!--  ===== Action Nodes =====  -->
+<Action ID="LogMessage">
+<input_port name="message">출력할 메시지</input_port>
+<input_port name="level" default="INFO">로그 레벨 (INFO/WARN/ERROR)</input_port>
+</Action>
+<Action ID="WaitForMissionCommand">
+<input_port name="topic" default="/mission_command">명령 토픽</input_port>
+<input_port name="timeout" default="300.0">타임아웃 (초)</input_port>
+<output_port name="command">받은 명령어</output_port>
+</Action>
+<Action ID="ParseTargetCommand">
+<input_port name="command">파싱할 명령어 ("북쪽 5m")</input_port>
+<input_port name="parser_service" default="/parse_indoor_target">파서 서비스</input_port>
+<output_port name="target_pose">변환된 좌표</output_port>
+</Action>
+<Action ID="NavigateToTarget">
+<input_port name="goal_pose">목표 좌표</input_port>
+<input_port name="action" default="/navigate_to_pose">Nav2 액션</input_port>
+<input_port name="timeout" default="120.0">타임아웃 (초)</input_port>
+</Action>
+<Action ID="NavigateToWaypoint">
+<input_port name="waypoint">경로점 좌표</input_port>
+<input_port name="action" default="/navigate_to_pose">Nav2 액션</input_port>
+<input_port name="timeout" default="30.0">타임아웃 (초)</input_port>
+</Action>
+<Action ID="GenerateSpiralWaypoints">
+<input_port name="center">중심 좌표</input_port>
+<input_port name="max_radius">최대 반경 (m)</input_port>
+<input_port name="density" default="0.3">경로점 간격 (m)</input_port>
+<output_port name="waypoints">생성된 경로점 배열</output_port>
+</Action>
+<Action ID="GetNextWaypoint">
+<input_port name="waypoints">경로점 배열</input_port>
+<output_port name="current_waypoint">현재 경로점</output_port>
+</Action>
+<Action ID="RotateToAngle">
+<input_port name="angle">목표 각도 (도)</input_port>
+<input_port name="angular_velocity" default="0.5">회전 속도 (rad/s)</input_port>
+</Action>
+<Action ID="Wait">
+<input_port name="duration">대기 시간 (초)</input_port>
+</Action>
+<Action ID="ConfirmVictimLocation">
+<input_port name="victim_topic" default="/victim_detection">조난자 토픽</input_port>
+<output_port name="victim_pose">조난자 정확한 위치</output_port>
+</Action>
+<Action ID="GenerateRescuePaths">
+<input_port name="start_pose">로봇 시작 위치</input_port>
+<input_port name="victim_pose">조난자 위치</input_port>
+<input_port name="terrain_map">지형 맵 데이터</input_port>
+<input_port name="service" default="/generate_rescue_paths">경로 생성 서비스</input_port>
+<output_port name="safe_path">안전 경로 (사람 기준)</output_port>
+<output_port name="balanced_path">균형 경로</output_port>
+<output_port name="shortest_path">최단 경로</output_port>
+<output_port name="danger_zones">위험 구간 목록</output_port>
+</Action>
+<Action ID="VisualizeResults">
+<input_port name="victim_pose">조난자 위치</input_port>
+<input_port name="safe_path">안전 경로</input_port>
+<input_port name="balanced_path">균형 경로</input_port>
+<input_port name="shortest_path">최단 경로</input_port>
+<input_port name="topic" default="/visualization_marker_array">시각화 토픽</input_port>
+</Action>
+<Action ID="PublishMissionSuccess">
+<input_port name="topic" default="/mission_status">상태 토픽</input_port>
+<input_port name="message">메시지</input_port>
+<input_port name="sound" default="">효과음 파일 경로</input_port>
+</Action>
+<Action ID="PublishMissionReport">
+<input_port name="topic" default="/mission_report">보고서 토픽</input_port>
+</Action>
+<Action ID="SaveMapData">
+<input_port name="directory">저장 디렉토리</input_port>
+<input_port name="format" default="pgm">파일 형식</input_port>
+</Action>
+<Action ID="StartClueMonitoring">
+<input_port name="yolo_topic" default="/yolo/detections">YOLO 감지 토픽</input_port>
+<input_port name="clue_classes" default="backpack,shoe,cell phone,bottle,umbrella"> 감지할 물건 종류 (YOLO 클래스명, 쉼표 구분) </input_port>
+<input_port name="min_confidence" default="0.7">최소 신뢰도</input_port>
+<output_port name="clue_locations">발견된 물건 위치 리스트</output_port>
+</Action>
+<Action ID="GetNextClue">
+<input_port name="blackboard_key" default="clue_locations">물건 리스트 키</input_port>
+<output_port name="current_clue">현재 물건 정보 {position, type, confidence}</output_port>
+</Action>
+<Action ID="LogClueSuccess">
+<input_port name="message">로그 메시지</input_port>
+<input_port name="clue_info">물건 정보</input_port>
+</Action>
+<!--  ===== 귀환 및 동반 안내 노드 =====  -->
+<Action ID="FinalizeHumanSafePath">
+<input_port name="terrain_map_topic" default="/grid_map">지형 맵 토픽</input_port>
+<input_port name="robot_path">로봇이 지나온 경로</input_port>
+<output_port name="human_safe_path">사람용 안전 경로</output_port>
+<output_port name="danger_zones">위험 구간 목록</output_port>
+</Action>
+<Action ID="WaitForRescueTeam">
+<input_port name="topic" default="/rescue_team_ready">구조대 준비 토픽</input_port>
+<input_port name="timeout" default="60.0">타임아웃 (초)</input_port>
+</Action>
+<Action ID="StartEscortMode">
+<input_port name="walking_speed" default="1.0">이동 속도 (m/s)</input_port>
+<input_port name="lead_distance" default="2.0">선행 거리 (m)</input_port>
+<input_port name="max_separation" default="5.0">최대 이격 거리 (m)</input_port>
+</Action>
+<Action ID="StopEscortMode">
+<!--  동반 이동 모드 비활성화  -->
+</Action>
+<Action ID="SpeakMessage">
+<input_port name="message">음성 메시지</input_port>
+<input_port name="topic" default="/tts_speak">TTS 토픽</input_port>
+</Action>
+<Action ID="CheckAndWarnDangerZone">
+<input_port name="current_pos">현재 위치</input_port>
+<input_port name="danger_zones">위험 구간 목록</input_port>
+<input_port name="warning_distance" default="5.0">경고 거리 (m)</input_port>
+<input_port name="tts_topic" default="/tts_speak">TTS 토픽</input_port>
+</Action>
+<Condition ID="IsTeamFollowing">
+<input_port name="team_topic" default="/rescue_team_position">구조대 위치 토픽</input_port>
+<input_port name="max_distance" default="5.0">최대 허용 거리 (m)</input_port>
+</Condition>
+<Action ID="StopRobot">
+<input_port name="topic" default="/cmd_vel">속도 명령 토픽</input_port>
+</Action>
+<Action ID="WaitForTeamCatchUp">
+<input_port name="team_topic" default="/rescue_team_position">구조대 위치 토픽</input_port>
+<input_port name="max_distance" default="3.0">따라잡기 거리 (m)</input_port>
+<input_port name="timeout" default="30.0">타임아웃 (초)</input_port>
+</Action>
+<Action ID="NavigateSlowly">
+<input_port name="waypoint">경로점 좌표</input_port>
+<input_port name="max_speed" default="1.0">최대 속도 (m/s)</input_port>
+<input_port name="action" default="/navigate_to_pose">Nav2 액션</input_port>
+<input_port name="timeout" default="60.0">타임아웃 (초)</input_port>
+</Action>
+<Action ID="AnnounceProgress">
+<input_port name="waypoints">전체 경로점</input_port>
+<input_port name="current_index">현재 인덱스</input_port>
+<input_port name="tts_topic" default="/tts_speak">TTS 토픽</input_port>
+</Action>
+<Condition ID="IsAtVictimLocation">
+<input_port name="current_pos">현재 위치</input_port>
+<input_port name="victim_pos">조난자 위치</input_port>
+<input_port name="threshold" default="1.0">도착 판정 거리 (m)</input_port>
+</Condition>
+<Action ID="AnnounceArrival">
+<input_port name="topic" default="/mission_status">상태 토픽</input_port>
+<input_port name="message">메시지</input_port>
+<input_port name="sound" default="">효과음 파일 경로</input_port>
+</Action>
+</TreeNodesModel>
+</root>

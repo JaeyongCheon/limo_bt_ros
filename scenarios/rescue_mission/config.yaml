@@ -1,0 +1,14 @@
+env_pkg: scenarios.rescue_mission
+scenario: scenarios.rescue_mission
+
+agent:
+  behavior_tree_xml: basic_test.xml
+  initial_blackboard: {}
+
+bt_runner:
+  bt_tick_rate: 2
+  bt_visualiser:
+    enabled: false
+
+ros_bridge:
+  use_ros: false

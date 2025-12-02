@@ -1,4 +1,3 @@
-# modules/bt_constructor.py
 import os
 from modules.utils import (
     parse_behavior_tree,
@@ -7,24 +6,21 @@ from modules.utils import (
     optional_import,
 )
 
+
 def build_behavior_tree(agent, behavior_tree_xml: str, env_pkg: str):
     """
-    Build a Behavior Tree from an XML file for the given agent and environment package.
+    Build a Behavior Tree from an XML file for the given agent and environment.
 
     Parameters
     ----------
     agent : Agent (or compatible)
-        The agent instance; passed to action/condition node constructors.
+        Agent instance; passed to action/condition constructors.
     behavior_tree_xml : str
-        Path to the XML file containing a <BehaviorTree> root.
+        Path to XML <BehaviorTree>.
     env_pkg : str
-        Dotted package path for the scenario environment (e.g., "scenarios.simple").
-
-    Returns
-    -------
-    root_node : BT Node
-        The constructed behavior tree root node.
+        Dotted package path (e.g., "scenarios.rescue_mission")
     """
+
     bt_module = optional_import(f"{env_pkg}.bt_nodes")
     mission_bt_module = optional_import(f"{env_pkg}.mission_bt_nodes")
 
@@ -35,6 +31,7 @@ def build_behavior_tree(agent, behavior_tree_xml: str, env_pkg: str):
         )
 
     xml_root = parse_behavior_tree(behavior_tree_xml)
+
     return _parse_xml_to_bt(
         xml_root.find("BehaviorTree"),
         bt_module=bt_module,
@@ -47,7 +44,7 @@ def build_behavior_tree(agent, behavior_tree_xml: str, env_pkg: str):
 def _parse_xml_to_bt(xml_node, *, bt_module, mission_bt_module, agent, top_xml_path):
     node_type = xml_node.tag
 
-    # --- SubTree: inline from file (one <BehaviorTree> per file assumed) ---
+    # ---------- SubTree support ----------
     if node_type == "SubTree":
         subtree_id = xml_node.attrib.get("ID")
         if not subtree_id:
@@ -65,31 +62,59 @@ def _parse_xml_to_bt(xml_node, *, bt_module, mission_bt_module, agent, top_xml_p
             top_xml_path=sub_behavior_tree_xml,
         )
 
-    # --- Regular node parsing ---
-    children = [_parse_xml_to_bt(child,
-                                 bt_module=bt_module,
-                                 mission_bt_module=mission_bt_module,
-                                 agent=agent,
-                                 top_xml_path=top_xml_path) for child in xml_node]
+    # ---------- Recursively build children ----------
+    children = [
+        _parse_xml_to_bt(
+            child,
+            bt_module=bt_module,
+            mission_bt_module=mission_bt_module,
+            agent=agent,
+            top_xml_path=top_xml_path,
+        )
+        for child in xml_node
+    ]
 
     BTNodeList = getattr(bt_module, "BTNodeList")
+
+    # ---------- Convert XML attributes ----------
     attrib = {k: convert_value(v) for k, v in xml_node.attrib.items()}
 
+    # ===========================================================
+    # CONTROL NODES  (Sequence, Selector, etc.)
+    # ===========================================================
     if node_type in BTNodeList.CONTROL_NODES:
         control_class = getattr(bt_module, node_type)
+
+        # Remove duplicate 'name' parameter: node_type already fills it
+        attrib = dict(attrib)
+        attrib.pop("name", None)
+
         return control_class(node_type, children=children, **attrib)
 
+    # ===========================================================
+    # DECORATOR NODES  (Inverter, Retry, etc.)
+    # ===========================================================
     elif node_type in BTNodeList.DECORATOR_NODES:
         decorator_class = getattr(bt_module, node_type)
+
         if len(children) != 1:
-            raise ValueError(f"[ERROR] Decorator '{node_type}' must have exactly 1 child.")
+            raise ValueError(
+                f"[ERROR] Decorator '{node_type}' must have exactly one child."
+            )
+
         return decorator_class(node_type, child=children[0], **attrib)
 
+    # ===========================================================
+    # ACTION / CONDITION NODES
+    # ===========================================================
     elif node_type in (BTNodeList.ACTION_NODES + BTNodeList.CONDITION_NODES):
         action_class = getattr(bt_module, node_type)
         return action_class(node_type, agent, **attrib)
 
-    elif node_type == "BehaviorTree":  # Root
+    # ===========================================================
+    # ROOT BehaviorTree tag
+    # ===========================================================
+    elif node_type == "BehaviorTree":
         if not children:
             raise ValueError("[ERROR] <BehaviorTree> has no child node.")
         return children[0]

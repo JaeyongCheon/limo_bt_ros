@@ -1,5 +1,11 @@
-from modules.utils import config, optional_import
-env_pkg = config.get('scenario')
+from modules.utils import config, env_pkg as utils_env_pkg, optional_import
+
+if config is not None and isinstance(config, dict) and 'env_pkg' in config:
+    env_pkg = config['env_pkg']
+else:
+    env_pkg = utils_env_pkg or "rescue_mission"
+
+bt_module = optional_import(env_pkg + ".bt_nodes")
 bt_module = optional_import(env_pkg + ".bt_nodes")
 
 from modules.bt_constructor import build_behavior_tree
