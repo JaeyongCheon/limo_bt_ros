@@ -1,13 +1,13 @@
-scenario: scenarios.example_turtlesim
+scenario: scenarios.rescue_mission
 
 agent:
-  namespaces: "/turtle1"
+  namespaces: "limo"  # LIMO 로봇 namespace (토픽: /limo/odom, /limo/cmd_vel 등)
   behavior_tree_xml: "default_bt.xml"
 
 bt_runner:
-  bt_tick_rate: 10.0 
+  bt_tick_rate: 10.0  # BT 실행 주기 (Hz)
   bt_visualiser:
-    enabled: True       # Set to True to enable BT visualisation, False to disable
-    screen_width: 600 
-    screen_height: 600 
-  profiling_mode: False
+    enabled: True       # BT 시각화 활성화
+    screen_width: 800   # 시각화 창 크기
+    screen_height: 800 
+  profiling_mode: False # 프로파일링 비활성화

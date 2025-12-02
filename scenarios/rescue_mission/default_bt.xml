@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<!--
+  구조 로봇 BT - 팀원 3 구현 노드 (11개 모두 사용)
+  나선형 탐색, 경로 생성, 시각화, 동반 안내
+-->
+
+<root main_tree_to_execute="MainTree">
+  
+  <BehaviorTree ID="MainTree">
+    <Sequence name="RescueMission">
+      
+      <!-- 1. GridMap 데이터 확인 -->
+      <Condition ID="HasGridMapData" name="CheckGridMap"/>
+      
+      <!-- 2. 나선형 경로점 생성 (조난자 탐색용) -->
+      <Action ID="GenerateSpiralWaypoints" name="CreateSpiral"/>
+      
+      <!-- 3. 다음 경로점 가져오기 -->
+      <Action ID="GetNextWaypoint" name="GetWaypoint"/>
+      
+      <!-- 4. 구조 경로 생성 (안전/균형/최단 3가지) -->
+      <Action ID="GenerateRescuePaths" name="CreatePaths"/>
+      
+      <!-- 5. 경로 시각화 (RViz에 표시) -->
+      <Action ID="VisualizeResults" name="ShowPaths"/>
+      
+      <!-- 6. 미션 성공 알림 -->
+      <Action ID="PublishMissionSuccess" name="AnnounceSuccess"/>
+      
+      <!-- 7. 초기 위치로 귀환 -->
+      <Action ID="ReturnToBase" name="GoHome"/>
+      
+      <!-- 8. 구조대 준비 대기 (30초 타임아웃) -->
+      <Action ID="WaitForRescueTeam" name="WaitTeam"/>
+      
+      <!-- 9. 위험 구간 경고 -->
+      <Action ID="WarnDangerZone" name="WarnDanger"/>
+      
+      <!-- 10. 구조대 추종 확인 -->
+      <Action ID="CheckTeamFollowing" name="CheckTeam"/>
+      
+      <!-- 11. 구조대 동반 안내 -->
+      <Action ID="EscortToVictim" name="EscortMode"/>
+      
+      <!-- 12. 조난자 위치 도착 알림 -->
+      <Action ID="AnnounceArrival" name="Arrival"/>
+      
+    </Sequence>
+  </BehaviorTree>
+  
+  <!-- ========================================= -->
+  <!-- 노드 정의 (Groot 시각화용)                -->
+  <!-- ========================================= -->
+  <TreeNodesModel>
+    
+    <!-- Condition Nodes -->
+    <Condition ID="HasGridMapData">
+      <output_port name="grid_map">GridMap 데이터</output_port>
+    </Condition>
+    
+    <!-- Action Nodes -->
+    <Action ID="GenerateSpiralWaypoints">
+      <input_port name="center">중심 좌표</input_port>
+      <input_port name="max_radius" default="5.0">최대 반경 (m)</input_port>
+      <output_port name="waypoints">생성된 경로점</output_port>
+    </Action>
+    
+    <Action ID="GetNextWaypoint">
+      <input_port name="waypoints">경로점 배열</input_port>
+      <output_port name="current_waypoint">현재 경로점</output_port>
+    </Action>
+    
+    <Action ID="GenerateRescuePaths">
+      <input_port name="start_pose">시작 위치</input_port>
+      <input_port name="victim_pose">조난자 위치</input_port>
+      <input_port name="grid_map">지형 맵</input_port>
+      <output_port name="rescue_paths">3가지 경로</output_port>
+    </Action>
+    
+    <Action ID="VisualizeResults">
+      <input_port name="rescue_paths">경로 데이터</input_port>
+      <input_port name="victim_location">조난자 위치</input_port>
+    </Action>
+    
+    <Action ID="PublishMissionSuccess">
+      <input_port name="victim_location">조난자 위치</input_port>
+    </Action>
+    
+    <Action ID="ReturnToBase">
+      <input_port name="base_position" default="0.0,0.0">기지 위치</input_port>
+    </Action>
+    
+    <Action ID="WaitForRescueTeam">
+      <input_port name="timeout" default="30.0">타임아웃 (초)</input_port>
+    </Action>
+    
+    <Action ID="WarnDangerZone">
+      <input_port name="escort_info">동반 안내 정보</input_port>
+    </Action>
+    
+    <Action ID="CheckTeamFollowing"/>
+    
+    <Action ID="EscortToVictim">
+      <input_port name="rescue_paths">구조 경로</input_port>
+      <input_port name="grid_map">지형 맵</input_port>
+      <input_port name="victim_location">조난자 위치</input_port>
+    </Action>
+    
+    <Action ID="AnnounceArrival">
+      <input_port name="victim_location">조난자 위치</input_port>
+    </Action>
+    
+  </TreeNodesModel>
+  
+</root>
