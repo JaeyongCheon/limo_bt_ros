@@ -5,7 +5,6 @@ Behavior Tree framework for ROS 2 with Python implementation.
 ## 📁 프로젝트 구조
 
 - `scenarios/rescue_mission/` - 구조 로봇 시나리오 (팀원 3 구현)
-- `scenarios/example_turtlesim/` - Turtlesim 예제
 - `modules/` - BT 프레임워크 핵심 모듈
 - `config.yaml` - 시나리오 설정 파일
 

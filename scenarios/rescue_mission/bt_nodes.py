@@ -65,9 +65,9 @@ class IsNearbyTarget(ConditionWithROSTopics):
         target = blackboard.get('target_position')
         if target is None:
             return False
-        
+
         target_x, target_y = target[0], target[1]
-        
+
         # 거리 계산
         thresh = blackboard.get("nearby_threshold", self.default_thresh)
         dist = math.hypot(robot_x - target_x, robot_y - target_y)
@@ -104,7 +104,7 @@ class MoveToTarget(ActionWithROSAction):
         
         x, y = target[0], target[1]
         yaw = target[2] if len(target) > 2 else 0.0
-        
+
         ps = PoseStamped()
         ps.header.frame_id = 'map'
         ps.header.stamp = self.ros.node.get_clock().now().to_msg()
@@ -115,7 +115,7 @@ class MoveToTarget(ActionWithROSAction):
         # yaw를 quaternion으로 변환
         ps.pose.orientation.z = math.sin(yaw * 0.5)
         ps.pose.orientation.w = math.cos(yaw * 0.5)
-        
+
         goal = NavigateToPose.Goal()
         goal.pose = ps
         return goal
@@ -481,7 +481,7 @@ class WaitForDuration(Node):
         # 경과 시간 확인
         elapsed = (self.ros.node.get_clock().now() - self.start_time).nanoseconds / 1e9
         duration = blackboard.get('wait_duration', self.duration)
-        
+
         if elapsed >= duration:
             self.start_time = None  # 리셋
             self.status = Status.SUCCESS
