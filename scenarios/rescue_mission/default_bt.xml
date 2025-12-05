@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <!--
-  구조 로봇 BT - 전체 시나리오 (간결 버전)
+  기본 액션 노드 테스트 BT
+  basic_action_nodes.py 노드들만 사용
 -->
 
 <root main_tree_to_execute="MainTree">
@@ -8,174 +9,40 @@
   <BehaviorTree ID="MainTree">
     <Sequence>
       
-      <!-- 1. 시스템 초기화 -->
-      <CheckSensorStatus/>
+      <!-- 1. 시스템 시작 로그 -->
+      <LogMessage message="🚀 구조 로봇 시스템 시작" level="INFO"/>
       
-      <!-- 2. 목표 지점 입력 및 이동 -->
+      <!-- 2. 목표 좌표 입력 -->
       <Sequence>
         <WaitForMissionCommand/>
         <ParseTargetCommand/>
-        <NavigateToTarget/>
+        <LogMessage message="✅ 목표 좌표 설정 완료" level="INFO"/>
       </Sequence>
       
-      <!-- 3. 조난자 탐색 -->
-      <Fallback>
-        <IsVictimDetected/>
-        
-        <Sequence>
-          <GenerateSpiralWaypoints max_radius="5.0"/>
-          <Repeat num_cycles="20">
-            <Sequence>
-              <GetNextWaypoint/>
-              <NavigateToWaypoint/>
-              <IsVictimDetected/>
-            </Sequence>
-          </Repeat>
-        </Sequence>
-      </Fallback>
-      
-      <!-- 4. 구조 경로 생성 및 시각화 -->
+      <!-- 3. 목표 지점으로 이동 -->
       <Sequence>
-        <ConfirmVictimLocation/>
-        <GenerateRescuePaths/>
-        <VisualizeResults/>
-        <PublishMissionSuccess/>
+        <LogMessage message="🚗 목표 지점으로 이동 시작" level="INFO"/>
+        <NavigateToTarget/>
+        <LogMessage message="✅ 목표 지점 도착" level="INFO"/>
       </Sequence>
       
-      <!-- 5. 구조대 동반 안내 (선택) -->
-      <Fallback>
-        <Sequence>
-          <IsReturnModeEnabled/>
-          <ReturnToBase/>
-        </Sequence>
-        
-        <Sequence>
-          <WaitForRescueTeam/>
-          <Repeat num_cycles="100">
-            <Sequence>
-              <EscortToVictim/>
-              <CheckTeamFollowing/>
-              <WarnDangerZone/>
-            </Sequence>
-          </Repeat>
-          <AnnounceArrival/>
-        </Sequence>
-      </Fallback>
+      <!-- 4. 대기 -->
+      <Sequence>
+        <LogMessage message="⏳ 3초 대기" level="INFO"/>
+        <Wait duration="3.0"/>
+      </Sequence>
+      
+      <!-- 5. 회전 테스트 -->
+      <Sequence>
+        <LogMessage message="🔄 90도 회전 테스트" level="INFO"/>
+        <RotateToAngle target_angle="1.57"/>
+        <LogMessage message="✅ 회전 완료" level="INFO"/>
+      </Sequence>
+      
+      <!-- 6. 미션 완료 -->
+      <LogMessage message="🎉 기본 미션 완료!" level="INFO"/>
       
     </Sequence>
   </BehaviorTree>
-  
-  <!-- ========================================= -->
-  <!-- 노드 정의 (Groot 시각화용)                -->
-  <!-- ========================================= -->
-  <TreeNodesModel>
-    
-    <!-- Condition Nodes -->
-    <Condition ID="CheckSensorStatus"/>
-    <Condition ID="IsTerrainAnalysisReady"/>
-    <Condition ID="IsYOLOReady"/>
-    <Condition ID="IsNav2Ready"/>
-    <Condition ID="IsVictimDetected"/>
-    <Condition ID="HasCluesStored"/>
-    <Condition ID="IsReturnModeEnabled"/>
-    <Condition ID="HasGridMapData"/>
-    
-    <!-- Basic Action Nodes -->
-    <Action ID="LogMessage">
-      <input_port name="message">로그 메시지</input_port>
-      <input_port name="level" default="INFO">로그 레벨</input_port>
-    </Action>
-    
-    <Action ID="WaitForMissionCommand">
-      <output_port name="target_position">입력받은 목표 좌표</output_port>
-    </Action>
-    
-    <Action ID="ParseTargetCommand">
-      <input_port name="target_position">검증할 좌표</input_port>
-    </Action>
-    
-    <Action ID="NavigateToTarget">
-      <input_port name="target_position">목표 좌표</input_port>
-    </Action>
-    
-    <Action ID="NavigateToWaypoint">
-      <input_port name="current_waypoint">현재 경로점</input_port>
-    </Action>
-    
-    <Action ID="RotateToAngle">
-      <input_port name="target_angle">목표 각도 (라디안)</input_port>
-    </Action>
-    
-    <Action ID="Wait">
-      <input_port name="wait_duration" default="1.0">대기 시간 (초)</input_port>
-    </Action>
-    
-    <Action ID="ConfirmVictimLocation">
-      <input_port name="target_position">확인할 위치</input_port>
-      <output_port name="victim_location">확정된 조난자 위치</output_port>
-    </Action>
-    
-    <Action ID="StartClueMonitoring">
-      <output_port name="detected_clues">감지된 단서 리스트</output_port>
-    </Action>
-    
-    <Action ID="GetNextClue">
-      <input_port name="detected_clues">단서 리스트</input_port>
-      <output_port name="current_clue">현재 단서</output_port>
-    </Action>
-    
-    <!-- Advanced Action Nodes -->
-    <Action ID="GenerateSpiralWaypoints">
-      <input_port name="center">중심 좌표</input_port>
-      <input_port name="max_radius" default="5.0">최대 반경 (m)</input_port>
-      <output_port name="waypoints">생성된 경로점</output_port>
-    </Action>
-    
-    <Action ID="GetNextWaypoint">
-      <input_port name="waypoints">경로점 배열</input_port>
-      <output_port name="current_waypoint">현재 경로점</output_port>
-    </Action>
-    
-    <Action ID="GenerateRescuePaths">
-      <input_port name="start_pose">시작 위치</input_port>
-      <input_port name="victim_pose">조난자 위치</input_port>
-      <input_port name="grid_map">지형 맵</input_port>
-      <output_port name="rescue_paths">3가지 경로</output_port>
-    </Action>
-    
-    <Action ID="VisualizeResults">
-      <input_port name="rescue_paths">경로 데이터</input_port>
-      <input_port name="victim_location">조난자 위치</input_port>
-    </Action>
-    
-    <Action ID="PublishMissionSuccess">
-      <input_port name="victim_location">조난자 위치</input_port>
-    </Action>
-    
-    <Action ID="ReturnToBase">
-      <input_port name="base_position" default="0.0,0.0">기지 위치</input_port>
-    </Action>
-    
-    <Action ID="WaitForRescueTeam">
-      <input_port name="timeout" default="30.0">타임아웃 (초)</input_port>
-    </Action>
-    
-    <Action ID="WarnDangerZone">
-      <input_port name="escort_info">동반 안내 정보</input_port>
-    </Action>
-    
-    <Action ID="CheckTeamFollowing"/>
-    
-    <Action ID="EscortToVictim">
-      <input_port name="rescue_paths">구조 경로</input_port>
-      <input_port name="grid_map">지형 맵</input_port>
-      <input_port name="victim_location">조난자 위치</input_port>
-    </Action>
-    
-    <Action ID="AnnounceArrival">
-      <input_port name="victim_location">조난자 위치</input_port>
-    </Action>
-    
-  </TreeNodesModel>
   
 </root>
