@@ -2,6 +2,65 @@ import math
 import numpy as np
 from modules.base_bt_nodes import BTNodeList, Status, Node, Sequence, Fallback, ReactiveSequence, ReactiveFallback
 
+# ===== Decorator Nodes =====
+class Repeat(Node):
+    """
+    Repeat decorator node: Repeats the child node a specified number of times.
+    - If num_cycles is set, repeats exactly that many times (returns SUCCESS when done)
+    - If num_cycles is None or -1, repeats indefinitely until child returns FAILURE
+    - If child returns FAILURE before num_cycles is reached, Repeat returns FAILURE
+    """
+    def __init__(self, name, child, num_cycles=None):
+        super().__init__(name)
+        self.child = child
+        self.num_cycles = num_cycles if num_cycles is not None else -1
+        self.current_cycle = 0
+        self.type = "Decorator"
+
+    async def run(self, agent, blackboard):
+        # Infinite repeat mode
+        if self.num_cycles == -1 or self.num_cycles == 999:
+            status = await self.child.run(agent, blackboard)
+            self.status = status
+            
+            if status == Status.FAILURE:
+                self.current_cycle = 0
+                return Status.FAILURE
+            elif status == Status.RUNNING:
+                return Status.RUNNING
+            else:  # SUCCESS
+                self.child.reset()
+                return Status.RUNNING  # Keep repeating
+        
+        # Fixed number of cycles
+        else:
+            while self.current_cycle < self.num_cycles:
+                status = await self.child.run(agent, blackboard)
+                self.status = status
+                
+                if status == Status.RUNNING:
+                    return Status.RUNNING
+                elif status == Status.FAILURE:
+                    self.current_cycle = 0
+                    return Status.FAILURE
+                else:  # SUCCESS
+                    self.current_cycle += 1
+                    self.child.reset()
+            
+            # Completed all cycles
+            self.current_cycle = 0
+            return Status.SUCCESS
+
+    def halt(self):
+        self.current_cycle = 0
+        self.child.halt()
+
+    def reset(self):
+        super().reset()
+        self.current_cycle = 0
+        self.child.reset()
+
+
 # BT Node List
 CUSTOM_ACTION_NODES = [
     'MoveToTarget',
@@ -20,6 +79,17 @@ CUSTOM_ACTION_NODES = [
     'CheckTeamFollowing',
     'WarnDangerZone',
     'AnnounceArrival',
+    # Basic Action Nodes (주행 팀원 2)
+    'LogMessage',
+    'WaitForMissionCommand',
+    'ParseTargetCommand',
+    'NavigateToTarget',
+    'NavigateToWaypoint',
+    'RotateToAngle',
+    'Wait',
+    'ConfirmVictimLocation',
+    'StartClueMonitoring',
+    'GetNextClue',
 ]
 
 CUSTOM_CONDITION_NODES = [
@@ -28,11 +98,24 @@ CUSTOM_CONDITION_NODES = [
     'IsTerrainTraversable',
     'IsPathSafe',
     'HasGridMapData',
+    # System condition nodes
+    'CheckSensorStatus',
+    'IsTerrainAnalysisReady',
+    'IsYOLOReady',
+    'IsNav2Ready',
+    'IsVictimDetected',
+    'HasCluesStored',
+    'IsReturnModeEnabled',
+]
+
+CUSTOM_DECORATOR_NODES = [
+    'Repeat',
 ]
 
 # BT Node List
 BTNodeList.ACTION_NODES.extend(CUSTOM_ACTION_NODES)
 BTNodeList.CONDITION_NODES.extend(CUSTOM_CONDITION_NODES)
+BTNodeList.DECORATOR_NODES.extend(CUSTOM_DECORATOR_NODES)
 
 # ROS2 imports
 from nav_msgs.msg import Odometry
@@ -504,4 +587,29 @@ from .advanced_action_nodes import (
     CheckTeamFollowing,
     WarnDangerZone,
     AnnounceArrival,
+)
+
+# Import basic action nodes (주행 팀원 2)
+from .basic_action_nodes import (
+    LogMessage,
+    WaitForMissionCommand,
+    ParseTargetCommand,
+    NavigateToTarget,
+    NavigateToWaypoint,
+    RotateToAngle,
+    Wait,
+    ConfirmVictimLocation,
+    StartClueMonitoring,
+    GetNextClue,
+)
+
+# Import system condition nodes
+from .condition_nodes import (
+    CheckSensorStatus,
+    IsTerrainAnalysisReady,
+    IsYOLOReady,
+    IsNav2Ready,
+    IsVictimDetected,
+    HasCluesStored,
+    IsReturnModeEnabled,
 )

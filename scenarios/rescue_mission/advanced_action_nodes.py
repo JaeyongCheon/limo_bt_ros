@@ -13,6 +13,7 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 from vision_msgs.msg import Detection2DArray
+from nav_msgs.msg import Odometry
 
 from .path_planner import DualPathPlanner, generate_spiral_waypoints
 from .escort_mode import EscortMode
@@ -28,6 +29,16 @@ class GenerateSpiralWaypoints(Node):
         self.angular_step = angular_step
         self.radial_step = radial_step
         self.type = "Action"
+        
+        # Odometry 구독
+        ns = agent.ros_namespace or ""
+        odom_topic = f"{ns}/odom" if ns else "/odom"
+        self.current_odom = None
+        self.odom_sub = self.ros.node.create_subscription(
+            Odometry, odom_topic,
+            lambda msg: setattr(self, 'current_odom', msg),
+            10
+        )
     
     async def run(self, agent, blackboard):
         # 중심점 가져오기 (blackboard 또는 현재 위치)
@@ -35,9 +46,11 @@ class GenerateSpiralWaypoints(Node):
         
         if center is None:
             # 현재 위치를 중심으로 사용
-            if 'odom' in blackboard:
-                odom = blackboard['odom']
-                center = (odom.pose.pose.position.x, odom.pose.pose.position.y)
+            if self.current_odom is not None:
+                center = (
+                    self.current_odom.pose.pose.position.x, 
+                    self.current_odom.pose.pose.position.y
+                )
             else:
                 center = (0.0, 0.0)
         
@@ -55,7 +68,7 @@ class GenerateSpiralWaypoints(Node):
         blackboard['total_waypoints'] = len(waypoints)
         
         self.ros.node.get_logger().info(
-            f"나선형 경로점 생성 완료: {len(waypoints)}개 (중심: {center}, 반경: {max_radius}m)"
+            f"🔍 나선형 탐색 시작 - 경로점 {len(waypoints)}개 생성 (중심: ({center[0]:.1f}, {center[1]:.1f}), 반경: {max_radius}m)"
         )
         
         self.status = Status.SUCCESS
@@ -103,6 +116,16 @@ class GenerateRescuePaths(Node):
         self.ros = agent.ros_bridge
         self.planner = DualPathPlanner()
         self.type = "Action"
+        
+        # Odometry 구독
+        ns = agent.ros_namespace or ""
+        odom_topic = f"{ns}/odom" if ns else "/odom"
+        self.current_odom = None
+        self.odom_sub = self.ros.node.create_subscription(
+            Odometry, odom_topic,
+            lambda msg: setattr(self, 'current_odom', msg),
+            10
+        )
     
     async def run(self, agent, blackboard):
         # 필요한 데이터 확인
@@ -122,9 +145,11 @@ class GenerateRescuePaths(Node):
         
         if start_position is None:
             # 현재 위치를 시작점으로
-            if 'odom' in blackboard:
-                odom = blackboard['odom']
-                start_position = (odom.pose.pose.position.x, odom.pose.pose.position.y)
+            if self.current_odom is not None:
+                start_position = (
+                    self.current_odom.pose.pose.position.x, 
+                    self.current_odom.pose.pose.position.y
+                )
             else:
                 start_position = (0.0, 0.0)
         
@@ -135,14 +160,14 @@ class GenerateRescuePaths(Node):
             )
             
             if not rescue_paths or len(rescue_paths) == 0:
-                self.ros.node.get_logger().error("경로 생성 실패 - 통과 가능한 경로 없음")
+                self.ros.node.get_logger().error("❌ 경로 생성 실패 - 통과 가능한 경로 없음")
                 self.status = Status.FAILURE
                 return self.status
             
             blackboard['rescue_paths'] = rescue_paths
             
             # 로그 출력
-            self.ros.node.get_logger().info(f"구조 경로 {len(rescue_paths)}개 생성 완료:")
+            self.ros.node.get_logger().info(f"🛤️ 구조 경로 {len(rescue_paths)}개 생성 완료:")
             for path_info in rescue_paths:
                 metrics = path_info['metrics']
                 self.ros.node.get_logger().info(
@@ -179,8 +204,11 @@ class VisualizeResults(Node):
         victim_location = blackboard.get('victim_location')
         
         if rescue_paths is None:
+            self.ros.node.get_logger().warn("⚠️ 시각화할 경로 없음")
             self.status = Status.FAILURE
             return self.status
+        
+        self.ros.node.get_logger().info("📊 RViz 시각화 시작...")
         
         marker_array = MarkerArray()
         marker_id = 0
@@ -275,7 +303,7 @@ class VisualizeResults(Node):
         self.marker_pub.publish(marker_array)
         
         self.ros.node.get_logger().info(
-            f"경로 시각화 완료: {len(rescue_paths)}개 경로, {len(marker_array.markers)}개 마커"
+            f"✅ 경로 시각화 완료: {len(rescue_paths)}개 경로, {len(marker_array.markers)}개 마커"
         )
         
         self.status = Status.SUCCESS
@@ -311,7 +339,9 @@ class PublishMissionSuccess(Node):
         msg.data = message
         self.status_pub.publish(msg)
         
-        self.ros.node.get_logger().info(f"🎉 미션 성공 알림 발행: {message}")
+        self.ros.node.get_logger().info(f"🎉 미션 성공! 조난자 위치 송신 완료")
+        if victim_location:
+            self.ros.node.get_logger().info(f"   위치: ({victim_location[0]:.2f}, {victim_location[1]:.2f})")
         
         self.status = Status.SUCCESS
         return self.status
@@ -392,6 +422,16 @@ class EscortToVictim(Node):
         self.escort_mode = None
         self.escort_info = None
         self.type = "Action"
+        
+        # Odometry 구독
+        ns = agent.ros_namespace or ""
+        odom_topic = f"{ns}/odom" if ns else "/odom"
+        self.current_odom = None
+        self.odom_sub = self.ros.node.create_subscription(
+            Odometry, odom_topic,
+            lambda msg: setattr(self, 'current_odom', msg),
+            10
+        )
     
     async def run(self, agent, blackboard):
         # 초기화
@@ -426,9 +466,11 @@ class EscortToVictim(Node):
         
         # 현재 위치
         current_pos = (0.0, 0.0)
-        if 'odom' in blackboard:
-            odom = blackboard['odom']
-            current_pos = (odom.pose.pose.position.x, odom.pose.pose.position.y)
+        if self.current_odom is not None:
+            current_pos = (
+                self.current_odom.pose.pose.position.x, 
+                self.current_odom.pose.pose.position.y
+            )
         
         # 다음 경로점 가져오기
         next_waypoint = self.escort_mode.get_next_waypoint(current_pos, self.escort_info)
