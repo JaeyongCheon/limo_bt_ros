@@ -1,49 +1,66 @@
 <?xml version="1.0"?>
 <!--
-  구조 로봇 BT - 팀원 3 구현 노드 (11개 모두 사용)
-  나선형 탐색, 경로 생성, 시각화, 동반 안내
+  구조 로봇 BT - 전체 시나리오 (간결 버전)
 -->
 
 <root main_tree_to_execute="MainTree">
   
   <BehaviorTree ID="MainTree">
-    <Sequence name="RescueMission">
+    <Sequence>
       
-      <!-- 1. GridMap 데이터 확인 -->
-      <Condition ID="HasGridMapData" name="CheckGridMap"/>
+      <!-- 1. 시스템 초기화 -->
+      <CheckSensorStatus/>
       
-      <!-- 2. 나선형 경로점 생성 (조난자 탐색용) -->
-      <Action ID="GenerateSpiralWaypoints" name="CreateSpiral"/>
+      <!-- 2. 목표 지점 입력 및 이동 -->
+      <Sequence>
+        <WaitForMissionCommand/>
+        <ParseTargetCommand/>
+        <NavigateToTarget/>
+      </Sequence>
       
-      <!-- 3. 다음 경로점 가져오기 -->
-      <Action ID="GetNextWaypoint" name="GetWaypoint"/>
+      <!-- 3. 조난자 탐색 -->
+      <Fallback>
+        <IsVictimDetected/>
+        
+        <Sequence>
+          <GenerateSpiralWaypoints max_radius="5.0"/>
+          <Repeat num_cycles="20">
+            <Sequence>
+              <GetNextWaypoint/>
+              <NavigateToWaypoint/>
+              <IsVictimDetected/>
+            </Sequence>
+          </Repeat>
+        </Sequence>
+      </Fallback>
       
-      <!-- 4. 구조 경로 생성 (안전/균형/최단 3가지) -->
-      <Action ID="GenerateRescuePaths" name="CreatePaths"/>
+      <!-- 4. 구조 경로 생성 및 시각화 -->
+      <Sequence>
+        <ConfirmVictimLocation/>
+        <GenerateRescuePaths/>
+        <VisualizeResults/>
+        <PublishMissionSuccess/>
+      </Sequence>
       
-      <!-- 5. 경로 시각화 (RViz에 표시) -->
-      <Action ID="VisualizeResults" name="ShowPaths"/>
-      
-      <!-- 6. 미션 성공 알림 -->
-      <Action ID="PublishMissionSuccess" name="AnnounceSuccess"/>
-      
-      <!-- 7. 초기 위치로 귀환 -->
-      <Action ID="ReturnToBase" name="GoHome"/>
-      
-      <!-- 8. 구조대 준비 대기 (30초 타임아웃) -->
-      <Action ID="WaitForRescueTeam" name="WaitTeam"/>
-      
-      <!-- 9. 위험 구간 경고 -->
-      <Action ID="WarnDangerZone" name="WarnDanger"/>
-      
-      <!-- 10. 구조대 추종 확인 -->
-      <Action ID="CheckTeamFollowing" name="CheckTeam"/>
-      
-      <!-- 11. 구조대 동반 안내 -->
-      <Action ID="EscortToVictim" name="EscortMode"/>
-      
-      <!-- 12. 조난자 위치 도착 알림 -->
-      <Action ID="AnnounceArrival" name="Arrival"/>
+      <!-- 5. 구조대 동반 안내 (선택) -->
+      <Fallback>
+        <Sequence>
+          <IsReturnModeEnabled/>
+          <ReturnToBase/>
+        </Sequence>
+        
+        <Sequence>
+          <WaitForRescueTeam/>
+          <Repeat num_cycles="100">
+            <Sequence>
+              <EscortToVictim/>
+              <CheckTeamFollowing/>
+              <WarnDangerZone/>
+            </Sequence>
+          </Repeat>
+          <AnnounceArrival/>
+        </Sequence>
+      </Fallback>
       
     </Sequence>
   </BehaviorTree>
@@ -54,11 +71,60 @@
   <TreeNodesModel>
     
     <!-- Condition Nodes -->
-    <Condition ID="HasGridMapData">
-      <output_port name="grid_map">GridMap 데이터</output_port>
-    </Condition>
+    <Condition ID="CheckSensorStatus"/>
+    <Condition ID="IsTerrainAnalysisReady"/>
+    <Condition ID="IsYOLOReady"/>
+    <Condition ID="IsNav2Ready"/>
+    <Condition ID="IsVictimDetected"/>
+    <Condition ID="HasCluesStored"/>
+    <Condition ID="IsReturnModeEnabled"/>
+    <Condition ID="HasGridMapData"/>
     
-    <!-- Action Nodes -->
+    <!-- Basic Action Nodes -->
+    <Action ID="LogMessage">
+      <input_port name="message">로그 메시지</input_port>
+      <input_port name="level" default="INFO">로그 레벨</input_port>
+    </Action>
+    
+    <Action ID="WaitForMissionCommand">
+      <output_port name="target_position">입력받은 목표 좌표</output_port>
+    </Action>
+    
+    <Action ID="ParseTargetCommand">
+      <input_port name="target_position">검증할 좌표</input_port>
+    </Action>
+    
+    <Action ID="NavigateToTarget">
+      <input_port name="target_position">목표 좌표</input_port>
+    </Action>
+    
+    <Action ID="NavigateToWaypoint">
+      <input_port name="current_waypoint">현재 경로점</input_port>
+    </Action>
+    
+    <Action ID="RotateToAngle">
+      <input_port name="target_angle">목표 각도 (라디안)</input_port>
+    </Action>
+    
+    <Action ID="Wait">
+      <input_port name="wait_duration" default="1.0">대기 시간 (초)</input_port>
+    </Action>
+    
+    <Action ID="ConfirmVictimLocation">
+      <input_port name="target_position">확인할 위치</input_port>
+      <output_port name="victim_location">확정된 조난자 위치</output_port>
+    </Action>
+    
+    <Action ID="StartClueMonitoring">
+      <output_port name="detected_clues">감지된 단서 리스트</output_port>
+    </Action>
+    
+    <Action ID="GetNextClue">
+      <input_port name="detected_clues">단서 리스트</input_port>
+      <output_port name="current_clue">현재 단서</output_port>
+    </Action>
+    
+    <!-- Advanced Action Nodes -->
     <Action ID="GenerateSpiralWaypoints">
       <input_port name="center">중심 좌표</input_port>
       <input_port name="max_radius" default="5.0">최대 반경 (m)</input_port>
