@@ -2,37 +2,121 @@ import math
 import numpy as np
 from modules.base_bt_nodes import BTNodeList, Status, Node, Sequence, Fallback, ReactiveSequence, ReactiveFallback
 
+# ===== Decorator Nodes =====
+class Repeat(Node):
+    """
+    Repeat decorator node: Repeats the child node a specified number of times.
+    - If num_cycles is set, repeats exactly that many times (returns SUCCESS when done)
+    - If num_cycles is None or -1, repeats indefinitely until child returns FAILURE
+    - If child returns FAILURE before num_cycles is reached, Repeat returns FAILURE
+    """
+    def __init__(self, name, child, num_cycles=None):
+        super().__init__(name)
+        self.child = child
+        self.num_cycles = num_cycles if num_cycles is not None else -1
+        self.current_cycle = 0
+        self.type = "Decorator"
+
+    async def run(self, agent, blackboard):
+        # Infinite repeat mode
+        if self.num_cycles == -1 or self.num_cycles == 999:
+            status = await self.child.run(agent, blackboard)
+            self.status = status
+            
+            if status == Status.FAILURE:
+                self.current_cycle = 0
+                return Status.FAILURE
+            elif status == Status.RUNNING:
+                return Status.RUNNING
+            else:  # SUCCESS
+                self.child.reset()
+                return Status.RUNNING  # Keep repeating
+        
+        # Fixed number of cycles
+        else:
+            while self.current_cycle < self.num_cycles:
+                status = await self.child.run(agent, blackboard)
+                self.status = status
+                
+                if status == Status.RUNNING:
+                    return Status.RUNNING
+                elif status == Status.FAILURE:
+                    self.current_cycle = 0
+                    return Status.FAILURE
+                else:  # SUCCESS
+                    self.current_cycle += 1
+                    self.child.reset()
+            
+            # Completed all cycles
+            self.current_cycle = 0
+            return Status.SUCCESS
+
+    def halt(self):
+        self.current_cycle = 0
+        self.child.halt()
+
+    def reset(self):
+        super().reset()
+        self.current_cycle = 0
+        self.child.reset()
+
+
 # BT Node List
 CUSTOM_ACTION_NODES = [
-    'MoveToTarget',
-    'MoveToPosition',
-    'RotateInPlace',
-    'WaitForDuration',
-    # Advanced Action Nodes
-    'GenerateSpiralWaypoints',
-    'GetNextWaypoint',
-    'GenerateRescuePaths',
-    'VisualizeResults',
-    'PublishMissionSuccess',
-    'ReturnToBase',
-    'WaitForRescueTeam',
-    'EscortToVictim',
-    'CheckTeamFollowing',
-    'WarnDangerZone',
-    'AnnounceArrival',
+    # 'MoveToTarget',
+    # 'MoveToPosition',
+    # 'RotateInPlace',
+    # 'WaitForDuration',
+    # Advanced Action Nodes (주석 처리 - basic nodes만 사용)
+    # 'GenerateSpiralWaypoints',
+    # 'GetNextWaypoint',
+    # 'GenerateRescuePaths',
+    # 'VisualizeResults',
+    # 'PublishMissionSuccess',
+    # 'ReturnToBase',
+    # 'WaitForRescueTeam',
+    # 'EscortToVictim',
+    # 'CheckTeamFollowing',
+    # 'WarnDangerZone',
+    # 'AnnounceArrival',
+    # Basic Action Nodes (주행 팀원 2)
+    'ConfigureNav2ForDetour',
+    'LogMessage',
+    'WaitForMissionCommand',
+    'ParseTargetCommand',
+    'NavigateToTarget',
+    'NavigateToWaypoint',
+    'RotateToAngle',
+    'Wait',
+    'ConfirmVictimLocation',
+    'StartClueMonitoring',
+    'GetNextClue',
 ]
 
 CUSTOM_CONDITION_NODES = [
-    'IsNearbyTarget',
-    'IsAtPosition',
-    'IsTerrainTraversable',
-    'IsPathSafe',
-    'HasGridMapData',
+    # 'IsNearbyTarget',
+    # 'IsAtPosition',
+    # 'IsTerrainTraversable',
+    # 'IsPathSafe',
+    # 'HasGridMapData',
+    # System condition nodes (주석 처리 - 필요시만 사용)
+    # 'CheckSensorStatus',
+    # 'IsTerrainAnalysisReady',
+    # 'IsYOLOReady',
+    # 'IsNav2Ready',
+    # 'IsVictimDetected',
+    # 'HasCluesStored',
+    # 'IsReturnModeEnabled',
+]
+
+CUSTOM_DECORATOR_NODES = [
+    'Repeat',
 ]
 
 # BT Node List
 BTNodeList.ACTION_NODES.extend(CUSTOM_ACTION_NODES)
 BTNodeList.CONDITION_NODES.extend(CUSTOM_CONDITION_NODES)
+BTNodeList.DECORATOR_NODES.extend(CUSTOM_DECORATOR_NODES)
 
 # ROS2 imports
 from nav_msgs.msg import Odometry
@@ -76,15 +160,19 @@ class IsNearbyTarget(ConditionWithROSTopics):
         return dist <= float(thresh)
 
 class MoveToTarget(ActionWithROSAction):
-    """Nav2를 사용하여 목표 위치로 이동"""
+    """Nav2를 사용하여 목표 위치로 이동 (메모리 최적화 버전)"""
     def __init__(self, name, agent):
         ns = agent.ros_namespace or ""
         action_name = f"{ns}/navigate_to_pose" if ns else "/navigate_to_pose"
         super().__init__(name, agent, (NavigateToPose, action_name))
         
-        # 목표 위치 발행용 퍼블리셔
+        # 발행 빈도 제한 (메모리 최적화)
+        self.last_publish_time = None
+        self.publish_interval = 1.0  # 1초에 한 번만 발행
+        
+        # 목표 위치 발행용 퍼블리셔 (QoS 최적화)
         goal_topic = f"{ns}/goal_pose" if ns else "/goal_pose"
-        self.goal_pub = self.ros.node.create_publisher(PoseStamped, goal_topic, 10)
+        self.goal_pub = self.ros.node.create_publisher(PoseStamped, goal_topic, 1)
 
     def _get_target_position(self, bb):
         """blackboard에서 목표 위치 추출"""
@@ -121,7 +209,15 @@ class MoveToTarget(ActionWithROSAction):
         return goal
 
     def _on_running(self, agent, bb):
-        """RUNNING 중 목표 위치 발행"""
+        """RUNNING 중 목표 위치 발행 (빈도 제한)"""
+        current_time = self.ros.node.get_clock().now()
+        
+        # 발행 빈도 제한 (메모리 및 네트워크 대역폭 절약)
+        if self.last_publish_time is not None:
+            elapsed = (current_time - self.last_publish_time).nanoseconds / 1e9
+            if elapsed < self.publish_interval:
+                return
+        
         target = self._get_target_position(bb)
         if target is None:
             return
@@ -131,13 +227,14 @@ class MoveToTarget(ActionWithROSAction):
         
         ps = PoseStamped()
         ps.header.frame_id = 'map'
-        ps.header.stamp = self.ros.node.get_clock().now().to_msg()
+        ps.header.stamp = current_time.to_msg()
         ps.pose.position.x = float(x)
         ps.pose.position.y = float(y)
         ps.pose.orientation.z = math.sin(yaw * 0.5)
         ps.pose.orientation.w = math.cos(yaw * 0.5)
         
         self.goal_pub.publish(ps)
+        self.last_publish_time = current_time
 
     def _interpret_result(self, result, agent, bb, status_code=None):
         if status_code == GoalStatus.STATUS_SUCCEEDED:
@@ -205,13 +302,16 @@ class HasGridMapData(ConditionWithROSTopics):
 
 
 class IsTerrainTraversable(ConditionWithROSTopics):
-    """목표 위치의 지형이 통과 가능한지 확인"""
+    """목표 위치의 지형이 통과 가능한지 확인 (캐싱 최적화)"""
     def __init__(self, name, agent, min_traversability=0.5):
         super().__init__(name, agent, [
             (GridMap, '/grid_map', 'grid_map'),
             (Odometry, f"{agent.ros_namespace or ''}/odom" if agent.ros_namespace else "/odom", 'odom'),
         ])
         self.min_traversability = min_traversability
+        # 결과 캐싱으로 중복 계산 방지 (메모리 효율적)
+        self._cache_results = {}
+        self._cache_max_size = 50
     
     def _predicate(self, agent, blackboard):
         if 'grid_map' not in self._cache:
@@ -222,6 +322,15 @@ class IsTerrainTraversable(ConditionWithROSTopics):
         
         if target is None:
             return False
+        
+        # 캐시 키 생성 (0.1m 단위로 반올림)
+        cache_key = (round(target[0], 1), round(target[1], 1))
+        
+        # 캐시 확인 - 이전 결과 재사용
+        if cache_key in self._cache_results:
+            cached_result, cached_value = self._cache_results[cache_key]
+            blackboard['target_traversability'] = cached_value
+            return cached_result
         
         # GridMap에서 목표 위치의 traversability 확인
         try:
@@ -269,7 +378,14 @@ class IsTerrainTraversable(ConditionWithROSTopics):
             
             blackboard['target_traversability'] = traversability
             
-            return traversability >= self.min_traversability
+            # 결과 캐싱 (메모리 제한 적용)
+            result = traversability >= self.min_traversability
+            if len(self._cache_results) >= self._cache_max_size:
+                # FIFO: 가장 오래된 항목 제거
+                self._cache_results.pop(next(iter(self._cache_results)))
+            self._cache_results[cache_key] = (result, traversability)
+            
+            return result
             
         except Exception as e:
             # 에러 발생 시 안전하게 False 반환
@@ -322,8 +438,8 @@ class IsPathSafe(ConditionWithROSTopics):
             
             width = int(length_x / resolution)
             
-            # 직선 경로상의 몇 개 지점만 샘플링
-            num_samples = 10
+            # 직선 경로상의 샘플 수 최적화 (10 -> 5)
+            num_samples = 5  # 메모리 절약을 위해 샘플 수 감소
             target_x, target_y = target[0], target[1]
             
             for i in range(num_samples):
@@ -491,17 +607,43 @@ class WaitForDuration(Node):
         return self.status
 
 
-# Import advanced action nodes
-from .advanced_action_nodes import (
-    GenerateSpiralWaypoints,
-    GetNextWaypoint,
-    GenerateRescuePaths,
-    VisualizeResults,
-    PublishMissionSuccess,
-    ReturnToBase,
-    WaitForRescueTeam,
-    EscortToVictim,
-    CheckTeamFollowing,
-    WarnDangerZone,
-    AnnounceArrival,
+# Import advanced action nodes (주석 처리 - basic nodes만 사용)
+# from .advanced_action_nodes import (
+#     GenerateSpiralWaypoints,
+#     GetNextWaypoint,
+#     GenerateRescuePaths,
+#     VisualizeResults,
+#     PublishMissionSuccess,
+#     ReturnToBase,
+#     WaitForRescueTeam,
+#     EscortToVictim,
+#     CheckTeamFollowing,
+#     WarnDangerZone,
+#     AnnounceArrival,
+# )
+
+# Import basic action nodes (주행 팀원 2)
+from .basic_action_nodes import (
+    ConfigureNav2ForDetour,
+    LogMessage,
+    WaitForMissionCommand,
+    ParseTargetCommand,
+    NavigateToTarget,
+    NavigateToWaypoint,
+    RotateToAngle,
+    Wait,
+    ConfirmVictimLocation,
+    StartClueMonitoring,
+    GetNextClue,
 )
+
+# Import system condition nodes (주석 처리 - 필요시만 사용)
+# from .condition_nodes import (
+#     CheckSensorStatus,
+#     IsTerrainAnalysisReady,
+#     IsYOLOReady,
+#     IsNav2Ready,
+#     IsVictimDetected,
+#     HasCluesStored,
+#     IsReturnModeEnabled,
+# )
