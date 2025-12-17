@@ -1,7 +1,7 @@
 scenario: scenarios.rescue_mission
 
 agent:
-  namespaces: "limo"  # LIMO 로봇 namespace (토픽: /limo/odom, /limo/cmd_vel 등)
+  namespaces: ""  # LIMO 로봇 namespace (토픽: /limo/odom, /limo/cmd_vel 등)
   behavior_tree_xml: "default_bt.xml"
 
 bt_runner:
